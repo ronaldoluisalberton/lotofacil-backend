@@ -14,7 +14,7 @@ from io import BytesIO
 import base64
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Configurações
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
