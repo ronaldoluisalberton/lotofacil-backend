@@ -75,7 +75,18 @@ def atualizar_resultados():
         url = f'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/'
         print(f"Fazendo requisição para: {url}")
         
-        response = requests.get(url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Origin': 'https://loterias.caixa.gov.br',
+            'Referer': 'https://loterias.caixa.gov.br/',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+        }
+        
+        response = requests.get(url, headers=headers)
         if response.status_code != 200:
             print(f"Erro na requisição: Status {response.status_code}")
             return jsonify({'success': False, 'error': f'Erro ao obter dados da API: {response.status_code}'}), 500
