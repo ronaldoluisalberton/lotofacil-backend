@@ -1,18 +1,18 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import os
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import os
 import requests
-import json
-from sklearn.ensemble import RandomForestClassifier
-import joblib
+from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
 import base64
 import csv
+from models import LotofacilPredictor
+import json
+import joblib
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -41,16 +41,23 @@ def carregar_modelo():
     return None
 
 def treinar_modelo(df):
-    """Treina o modelo com os dados históricos"""
-    X = df[[f'Bola{i}' for i in range(1, 16)]].values
-    y = X  # No caso da Lotofácil, queremos prever os próprios números
-    
-    modelo = RandomForestClassifier(n_estimators=100, random_state=42)
-    modelo.fit(X, y)
-    
-    modelo_path = os.path.join(MODELO_DIR, 'modelo_lotofacil.joblib')
-    joblib.dump(modelo, modelo_path)
-    return modelo
+    """Treina o modelo com os dados atualizados"""
+    try:
+        predictor = LotofacilPredictor(os.path.join(DADOS_DIR, 'resultados.csv'))
+        print("Treinando Random Forest...")
+        predictor.train_random_forest()
+        print("Treinando LSTM...")
+        predictor.train_lstm()
+        print("Treinando Prophet...")
+        predictor.train_prophet()
+        print("Treinando XGBoost...")
+        predictor.train_xgboost()
+        print("Salvando modelos...")
+        predictor.save_models(MODELO_DIR)
+        return True
+    except Exception as e:
+        print(f"Erro ao treinar modelo: {str(e)}")
+        return False
 
 def atualizar_resultados():
     try:
@@ -118,40 +125,53 @@ def atualizar_resultados():
         print(f"Erro durante atualização: {str(e)}")
         return jsonify({'success': False, 'error': f'Erro ao atualizar resultados: {str(e)}'}), 500
 
-def gerar_numeros(metodo='aleatorio'):
-    """Gera números para jogar na Lotofácil"""
+def gerar_numeros(metodo='aleatorio', quantidade=15):
+    """Gera números para jogar na Lotofácil
+    
+    Args:
+        metodo (str): 'aleatorio' ou 'ia'
+        quantidade (int): quantidade de números a gerar (15-18)
+    """
     try:
+        quantidade = min(max(15, quantidade), 18)  # Garante que está entre 15 e 18
+        
         if metodo == 'aleatorio':
-            numeros = list(range(1, 26))
-            return np.random.choice(numeros, size=15, replace=False).tolist()
-        elif metodo == 'ia':
-            modelo = carregar_modelo()
-            if modelo is None:
-                return gerar_numeros('aleatorio')
+            numeros = sorted(np.random.choice(range(1, 26), size=quantidade, replace=False))
+        else:
+            df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
+            predictor = LotofacilPredictor(os.path.join(DADOS_DIR, 'resultados.csv'))
+            predictor.load_models(MODELO_DIR)
             
-            arquivo_csv = os.path.join(DADOS_DIR, 'resultados.csv')
-            if not os.path.exists(arquivo_csv):
-                return gerar_numeros('aleatorio')
-                
-            df = pd.read_csv(arquivo_csv)
-            ultimo_jogo = df.iloc[-1:][['Bola' + str(i) for i in range(1, 16)]].values
-            previsao = modelo.predict(ultimo_jogo)[0]
+            # Pegar os últimos 10 jogos
+            last_10_games = df.tail(10)[['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5',
+                                       'Bola6', 'Bola7', 'Bola8', 'Bola9', 'Bola10',
+                                       'Bola11', 'Bola12', 'Bola13', 'Bola14', 'Bola15']].values
             
-            numeros = np.unique(np.clip(previsao.astype(int), 1, 25))
-            if len(numeros) < 15:
-                complemento = np.random.choice(
-                    [n for n in range(1, 26) if n not in numeros],
-                    size=15-len(numeros),
-                    replace=False
-                )
-                numeros = np.concatenate([numeros, complemento])
-            elif len(numeros) > 15:
-                numeros = np.random.choice(numeros, size=15, replace=False)
+            # Gerar previsão base com 15 números
+            numeros_base = predictor.predict(last_10_games)
+            numeros_base = sorted([int(n) for n in numeros_base])
+            
+            # Se precisar de mais números, adicionar os próximos mais prováveis
+            if quantidade > 15:
+                # Pegar todos os números não selecionados
+                numeros_restantes = list(set(range(1, 26)) - set(numeros_base))
                 
-            return numeros.tolist()
+                # Calcular probabilidade para cada número restante
+                probabilidades = []
+                for num in numeros_restantes:
+                    freq = df[df.apply(lambda row: num in row[2:17].values, axis=1)].shape[0]
+                    probabilidades.append((num, freq))
+                
+                # Ordenar por frequência e pegar os números adicionais necessários
+                numeros_adicionais = sorted([x[0] for x in sorted(probabilidades, key=lambda x: x[1], reverse=True)[:quantidade-15]])
+                numeros = sorted(numeros_base + numeros_adicionais)
+            else:
+                numeros = numeros_base
+        
+        return numeros
     except Exception as e:
         print(f"Erro ao gerar números: {str(e)}")
-        return gerar_numeros('aleatorio')
+        return sorted(np.random.choice(range(1, 26), size=quantidade, replace=False))
 
 def analisar_jogo(numeros):
     """Analisa um jogo específico com base nos dados históricos"""
@@ -286,19 +306,20 @@ def atualizar():
 @app.route('/api/gerar', methods=['POST'])
 def gerar():
     """Endpoint para gerar números"""
-    metodo = request.json.get('metodo', 'aleatorio')
-    numeros = gerar_numeros(metodo)
-    if numeros:
-        analise = analisar_jogo(numeros)
+    try:
+        data = request.get_json()
+        metodo = data.get('metodo', 'aleatorio')
+        quantidade = int(data.get('quantidade', 15))
+        numeros = gerar_numeros(metodo, quantidade)
         return jsonify({
             'success': True,
-            'numeros': numeros,
-            'analise': analise
+            'numeros': numeros
         })
-    return jsonify({
-        'success': False,
-        'error': 'Erro ao gerar números'
-    }), 500
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/analisar', methods=['POST'])
 def analisar():
