@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
 import base64
+import csv
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -47,50 +48,59 @@ def treinar_modelo(df):
     return modelo
 
 def atualizar_resultados():
-    """Atualiza o arquivo CSV com os últimos resultados da Lotofácil"""
     try:
-        url = "https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil"
-        arquivo_csv = os.path.join(DADOS_DIR, 'resultados.csv')
+        print("Iniciando atualização dos resultados...")
+        # Verifica se o arquivo existe
+        if not os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
+            print("Criando arquivo resultados.csv...")
+            with open(os.path.join(DADOS_DIR, 'resultados.csv'), 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Concurso', 'Data', 'Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 
+                               'Bola6', 'Bola7', 'Bola8', 'Bola9', 'Bola10', 'Bola11', 'Bola12', 
+                               'Bola13', 'Bola14', 'Bola15'])
+
+        print("Carregando dados existentes...")
+        df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers)
+        # Obtém o último concurso
+        ultimo_concurso = df['Concurso'].max() if not df.empty else 0
+        print(f"Último concurso encontrado: {ultimo_concurso}")
+
+        # URL da API da Caixa
+        url = f'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/'
+        print(f"Fazendo requisição para: {url}")
+        
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Erro na requisição: Status {response.status_code}")
+            return jsonify({'success': False, 'error': f'Erro ao obter dados da API: {response.status_code}'}), 500
+        
         data = response.json()
+        print(f"Dados recebidos da API: {data}")
         
-        if not data or 'dezenasSorteadasOrdemSorteio' not in data:
-            raise Exception("Dados não encontrados na resposta da API")
+        novo_concurso = int(data['numero'])
+        print(f"Novo concurso: {novo_concurso}")
+        
+        if novo_concurso > ultimo_concurso:
+            print("Atualizando resultados...")
+            numeros = [int(n) for n in data['dezenasSorteadasOrdemSorteio']]
+            data_sorteio = data['dataApuracao']
             
-        numeros = [int(n) for n in data['dezenasSorteadasOrdemSorteio']]
-        if len(numeros) != 15:
-            raise Exception("Número incorreto de dezenas no resultado")
+            nova_linha = [novo_concurso, data_sorteio] + numeros
+            df_nova = pd.DataFrame([nova_linha], columns=df.columns)
+            df = pd.concat([df, df_nova], ignore_index=True)
             
-        resultado = {
-            'Concurso': [data.get('numero', 0)],
-            'Data': [data.get('dataApuracao', '')],
-        }
-        
-        for i, num in enumerate(numeros, 1):
-            resultado[f'Bola{i}'] = [num]
-        
-        df_novo = pd.DataFrame(resultado)
-        
-        if os.path.exists(arquivo_csv):
-            df_existente = pd.read_csv(arquivo_csv)
-            if data.get('numero', 0) > df_existente['Concurso'].max():
-                df = pd.concat([df_existente, df_novo], ignore_index=True)
-                df.to_csv(arquivo_csv, index=False)
-                treinar_modelo(df)
-            else:
-                df = df_existente
+            print("Salvando arquivo atualizado...")
+            df.to_csv(os.path.join(DADOS_DIR, 'resultados.csv'), index=False)
+            treinar_modelo(df)
+            return jsonify({'success': True, 'message': 'Resultados atualizados com sucesso!'})
         else:
-            df_novo.to_csv(arquivo_csv, index=False)
-            treinar_modelo(df_novo)
-        
-        return True, data.get('numero', 0)
-        
+            print("Nenhuma atualização necessária")
+            return jsonify({'success': True, 'message': 'Resultados já estão atualizados!'})
+            
     except Exception as e:
-        return False, str(e)
+        print(f"Erro durante atualização: {str(e)}")
+        return jsonify({'success': False, 'error': f'Erro ao atualizar resultados: {str(e)}'}), 500
 
 def gerar_numeros(metodo='aleatorio'):
     """Gera números para jogar na Lotofácil"""
@@ -255,16 +265,7 @@ def gerar_estatisticas():
 @app.route('/api/atualizar', methods=['POST'])
 def atualizar():
     """Endpoint para atualizar os resultados"""
-    sucesso, resultado = atualizar_resultados()
-    if sucesso:
-        return jsonify({
-            'success': True,
-            'ultimo_concurso': resultado
-        })
-    return jsonify({
-        'success': False,
-        'error': resultado
-    }), 500
+    return atualizar_resultados()
 
 @app.route('/api/gerar', methods=['POST'])
 def gerar():
