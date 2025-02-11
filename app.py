@@ -20,11 +20,16 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 # Configurações
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DADOS_DIR = os.path.join(BASE_DIR, 'dados')
+
+# Criar diretório de dados se não existir
+if not os.path.exists(DADOS_DIR):
+    os.makedirs(DADOS_DIR)
+
 MODELO_DIR = os.path.join(BASE_DIR, 'modelo')
 HISTORICO_DIR = os.path.join(DADOS_DIR, 'historico')
 
 # Criar diretórios necessários
-for dir_path in [DADOS_DIR, MODELO_DIR, HISTORICO_DIR]:
+for dir_path in [MODELO_DIR, HISTORICO_DIR]:
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
 
