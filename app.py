@@ -15,7 +15,6 @@ import json
 import joblib
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Configurações
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +31,17 @@ HISTORICO_DIR = os.path.join(DADOS_DIR, 'historico')
 for dir_path in [MODELO_DIR, HISTORICO_DIR]:
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
+
+FRONTEND_URL = 'https://lotofacil-frontend.vercel.app'
+
+# Configurar CORS
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', FRONTEND_URL)
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
 
 def serialize_number(obj):
     """Converte números numpy/pandas para Python nativo"""
@@ -482,10 +492,18 @@ def ultimo_concurso():
 @app.route('/api/status')
 def status():
     """Endpoint para verificar se a API está online"""
-    return jsonify({
-        'status': 'online',
-        'timestamp': datetime.now().isoformat()
-    })
+    try:
+        return jsonify({
+            'status': 'online',
+            'timestamp': datetime.now().isoformat(),
+            'cors': FRONTEND_URL
+        })
+    except Exception as e:
+        print(f"Erro no status: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Configuração para o Glitch
