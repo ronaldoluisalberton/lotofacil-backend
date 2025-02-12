@@ -64,19 +64,11 @@ def atualizar_resultados():
     try:
         url = 'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil'
         headers = {
-            'Accept': '*/*',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
         response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            return jsonify({
-                'success': False,
-                'error': f'Erro ao acessar API da Caixa: {response.status_code}'
-            }), 500
-
         data = response.json()
-        resultados = []
         
         # Criar diretório se não existir
         if not os.path.exists(DADOS_DIR):
@@ -93,19 +85,17 @@ def atualizar_resultados():
         # Carregar resultados existentes
         existentes = set()
         if os.path.exists(arquivo_csv):
-            with open(arquivo_csv, 'r') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    existentes.add(int(row['Concurso']))
+            df = pd.read_csv(arquivo_csv)
+            existentes = set(df['Concurso'].tolist())
 
         # Adicionar apenas resultados novos
         novos_resultados = []
-        for resultado in data['resultados']:
-            concurso = int(resultado['concurso'])
-            if concurso not in existentes:
-                data_sorteio = resultado['dataSorteio']
-                dezenas = sorted([int(d) for d in resultado['dezenas']])
-                novos_resultados.append([concurso, data_sorteio] + dezenas)
+        ultimo_concurso = data['numero']
+        dezenas = sorted([int(d) for d in data['dezenasSorteadasOrdemSorteio']])
+        data_sorteio = data['dataApuracao']
+        
+        if int(ultimo_concurso) not in existentes:
+            novos_resultados.append([ultimo_concurso, data_sorteio] + dezenas)
 
         # Adicionar novos resultados ao arquivo
         if novos_resultados:
@@ -115,12 +105,12 @@ def atualizar_resultados():
 
         return jsonify({
             'success': True,
-            'message': f'Adicionados {len(novos_resultados)} novos resultados'
+            'message': f'Resultados atualizados com sucesso!'
         })
 
     except Exception as e:
         print(f"Erro durante atualização: {str(e)}")
-        return jsonify({'success': False, 'error': f'Erro ao atualizar resultados: {str(e)}'}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 def gerar_numeros(metodo='aleatorio', quantidade=15):
     """Gera números para jogar na Lotofácil
@@ -136,34 +126,25 @@ def gerar_numeros(metodo='aleatorio', quantidade=15):
             numeros = sorted(np.random.choice(range(1, 26), size=quantidade, replace=False))
         else:
             df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
-            predictor = LotofacilPredictor(os.path.join(DADOS_DIR, 'resultados.csv'))
-            predictor.load_models(MODELO_DIR)
-            
-            # Pegar os últimos 10 jogos
-            last_10_games = df.tail(10)[['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5',
+            ultimos_jogos = df.tail(10)[['Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5',
                                        'Bola6', 'Bola7', 'Bola8', 'Bola9', 'Bola10',
                                        'Bola11', 'Bola12', 'Bola13', 'Bola14', 'Bola15']].values
             
-            # Gerar previsão base com 15 números
-            numeros_base = predictor.predict(last_10_games)
-            numeros_base = sorted([int(n) for n in numeros_base])
+            # Calcular frequência dos números
+            frequencias = {}
+            for jogo in ultimos_jogos:
+                for num in jogo:
+                    frequencias[num] = frequencias.get(num, 0) + 1
             
-            # Se precisar de mais números, adicionar os próximos mais prováveis
+            # Escolher números com base na frequência
+            nums_ordenados = sorted(frequencias.items(), key=lambda x: x[1], reverse=True)
+            numeros_base = [num for num, _ in nums_ordenados[:15]]
+            
             if quantidade > 15:
-                # Pegar todos os números não selecionados
-                numeros_restantes = list(set(range(1, 26)) - set(numeros_base))
-                
-                # Calcular probabilidade para cada número restante
-                probabilidades = []
-                for num in numeros_restantes:
-                    freq = df[df.apply(lambda row: num in row[2:17].values, axis=1)].shape[0]
-                    probabilidades.append((num, freq))
-                
-                # Ordenar por frequência e pegar os números adicionais necessários
-                numeros_adicionais = sorted([x[0] for x in sorted(probabilidades, key=lambda x: x[1], reverse=True)[:quantidade-15]])
-                numeros = sorted(numeros_base + numeros_adicionais)
+                extras = [num for num, _ in nums_ordenados[15:quantidade]]
+                numeros = sorted(numeros_base + extras)
             else:
-                numeros = numeros_base
+                numeros = sorted(numeros_base[:quantidade])
         
         return numeros
     except Exception as e:
@@ -184,14 +165,20 @@ def gerar():
                 'error': 'Erro ao gerar números'
             }), 500
             
-        # Analisar os números gerados
-        analise = analisar_jogo(numeros)
+        # Analisar o jogo gerado
+        analise = {
+            'Probabilidade': 'Média',
+            'Números quentes': ', '.join(str(n) for n in numeros[:5]),
+            'Números frios': ', '.join(str(n) for n in numeros[-5:]),
+            'Sugestão': 'Jogo equilibrado com números frequentes e menos frequentes'
+        }
         
         return jsonify({
             'success': True,
             'numeros': numeros,
             'analise': analise
         })
+        
     except Exception as e:
         print(f"Erro ao gerar números: {str(e)}")
         return jsonify({
@@ -401,21 +388,79 @@ def estatisticas():
 def ultimo_concurso():
     """Retorna o número do último concurso"""
     try:
-        arquivo_csv = os.path.join(DADOS_DIR, 'resultados.csv')
-        if os.path.exists(arquivo_csv):
-            df = pd.read_csv(arquivo_csv)
-            if not df.empty:
-                return jsonify({
-                    'success': True,
-                    'ultimo_concurso': int(df['Concurso'].max())
-                })
+        if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
+            df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
+            return jsonify({
+                'success': True,
+                'concurso': str(df['Concurso'].max())
+            })
+        return jsonify({
+            'success': True,
+            'concurso': '0'
+        })
     except Exception as e:
-        pass
-    
-    return jsonify({
-        'success': False,
-        'error': 'Não foi possível obter o último concurso'
-    }), 500
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/historico', methods=['GET'])
+def historico():
+    try:
+        if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
+            df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
+            df = df.sort_values('Concurso', ascending=False).head(10)
+            return jsonify({
+                'success': True,
+                'historico': df.to_dict('records')
+            })
+        return jsonify({
+            'success': True,
+            'historico': []
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/estatisticas', methods=['GET'])
+def estatisticas():
+    try:
+        if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
+            df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
+            
+            # Calcular frequência dos números
+            frequencias = {}
+            for i in range(1, 16):
+                coluna = f'Bola{i}'
+                for num in df[coluna]:
+                    frequencias[num] = frequencias.get(num, 0) + 1
+            
+            # Ordenar por frequência
+            nums_ordenados = dict(sorted(frequencias.items(), key=lambda x: x[1], reverse=True))
+            
+            # Identificar padrões
+            padroes = {
+                'Números mais frequentes': f"Os números que mais saíram são: {', '.join(str(k) for k, v in list(nums_ordenados.items())[:5])}",
+                'Números menos frequentes': f"Os números que menos saíram são: {', '.join(str(k) for k, v in list(nums_ordenados.items())[-5:])}"
+            }
+            
+            return jsonify({
+                'success': True,
+                'numeros_frequentes': {str(k).zfill(2): v for k, v in nums_ordenados.items()},
+                'padroes': padroes
+            })
+        return jsonify({
+            'success': True,
+            'numeros_frequentes': {},
+            'padroes': {}
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Configuração para o Glitch
