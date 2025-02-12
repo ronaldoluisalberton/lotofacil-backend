@@ -33,6 +33,17 @@ for dir_path in [MODELO_DIR, HISTORICO_DIR]:
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
 
+def serialize_number(obj):
+    """Converte números numpy/pandas para Python nativo"""
+    if isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
+        return int(obj)
+    if isinstance(obj, (np.float64, np.float32)):
+        return float(obj)
+    raise TypeError(f'Object of type {type(obj)} is not JSON serializable')
+
+app.json_encoder = json.JSONEncoder
+app.json.encoder.default = serialize_number
+
 def carregar_modelo():
     """Carrega o modelo treinado"""
     modelo_path = os.path.join(MODELO_DIR, 'modelo_lotofacil.joblib')
@@ -64,10 +75,25 @@ def atualizar_resultados():
     try:
         url = 'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil'
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Origin': 'https://loterias.caixa.gov.br',
+            'Referer': 'https://loterias.caixa.gov.br/',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
         response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"Erro API Caixa: {response.status_code} - {response.text}")
+            return jsonify({
+                'success': False,
+                'error': f'Erro ao acessar API da Caixa: {response.status_code}'
+            }), 500
+
         data = response.json()
         
         # Criar diretório se não existir
@@ -86,15 +112,15 @@ def atualizar_resultados():
         existentes = set()
         if os.path.exists(arquivo_csv):
             df = pd.read_csv(arquivo_csv)
-            existentes = set(df['Concurso'].tolist())
+            existentes = set(df['Concurso'].astype(int).tolist())
 
         # Adicionar apenas resultados novos
         novos_resultados = []
-        ultimo_concurso = data['numero']
+        ultimo_concurso = int(data['numero'])
         dezenas = sorted([int(d) for d in data['dezenasSorteadasOrdemSorteio']])
         data_sorteio = data['dataApuracao']
         
-        if int(ultimo_concurso) not in existentes:
+        if ultimo_concurso not in existentes:
             novos_resultados.append([ultimo_concurso, data_sorteio] + dezenas)
 
         # Adicionar novos resultados ao arquivo
@@ -102,6 +128,9 @@ def atualizar_resultados():
             with open(arquivo_csv, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerows(novos_resultados)
+            print(f"Adicionado concurso {ultimo_concurso}")
+        else:
+            print(f"Concurso {ultimo_concurso} já existe")
 
         return jsonify({
             'success': True,
@@ -364,52 +393,16 @@ def salvar():
 @app.route('/api/historico', methods=['GET'])
 def historico():
     """Endpoint para obter o histórico de jogos"""
-    jogos = carregar_historico()
-    return jsonify({
-        'success': True,
-        'jogos': jogos
-    })
-
-@app.route('/api/estatisticas', methods=['GET'])
-def estatisticas():
-    """Endpoint para obter estatísticas gerais"""
-    stats = gerar_estatisticas()
-    if stats:
-        return jsonify({
-            'success': True,
-            'estatisticas': stats
-        })
-    return jsonify({
-        'success': False,
-        'error': 'Erro ao gerar estatísticas'
-    }), 500
-
-@app.route('/api/ultimo-concurso', methods=['GET'])
-def ultimo_concurso():
-    """Retorna o número do último concurso"""
-    try:
-        if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
-            df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
-            return jsonify({
-                'success': True,
-                'concurso': str(df['Concurso'].max())
-            })
-        return jsonify({
-            'success': True,
-            'concurso': '0'
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/api/historico', methods=['GET'])
-def historico():
     try:
         if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
             df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
             df = df.sort_values('Concurso', ascending=False).head(10)
+            
+            # Converter tipos para evitar erro de serialização
+            df['Concurso'] = df['Concurso'].astype(int)
+            for i in range(1, 16):
+                df[f'Bola{i}'] = df[f'Bola{i}'].astype(int)
+            
             return jsonify({
                 'success': True,
                 'historico': df.to_dict('records')
@@ -419,6 +412,7 @@ def historico():
             'historico': []
         })
     except Exception as e:
+        print(f"Erro ao obter histórico: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -426,6 +420,7 @@ def historico():
 
 @app.route('/api/estatisticas', methods=['GET'])
 def estatisticas():
+    """Endpoint para obter estatísticas gerais"""
     try:
         if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
             df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
@@ -435,6 +430,7 @@ def estatisticas():
             for i in range(1, 16):
                 coluna = f'Bola{i}'
                 for num in df[coluna]:
+                    num = int(num)  # Converter para int
                     frequencias[num] = frequencias.get(num, 0) + 1
             
             # Ordenar por frequência
@@ -455,6 +451,27 @@ def estatisticas():
             'success': True,
             'numeros_frequentes': {},
             'padroes': {}
+        })
+    except Exception as e:
+        print(f"Erro ao obter estatísticas: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/ultimo-concurso', methods=['GET'])
+def ultimo_concurso():
+    """Retorna o número do último concurso"""
+    try:
+        if os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
+            df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
+            return jsonify({
+                'success': True,
+                'concurso': str(df['Concurso'].max())
+            })
+        return jsonify({
+            'success': True,
+            'concurso': '0'
         })
     except Exception as e:
         return jsonify({
