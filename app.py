@@ -60,67 +60,64 @@ def treinar_modelo(df):
         return False
 
 def atualizar_resultados():
+    """Endpoint para atualizar os resultados"""
     try:
-        print("Iniciando atualização dos resultados...")
-        # Verifica se o arquivo existe
-        if not os.path.exists(os.path.join(DADOS_DIR, 'resultados.csv')):
-            print("Criando arquivo resultados.csv...")
-            with open(os.path.join(DADOS_DIR, 'resultados.csv'), 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Concurso', 'Data', 'Bola1', 'Bola2', 'Bola3', 'Bola4', 'Bola5', 
-                               'Bola6', 'Bola7', 'Bola8', 'Bola9', 'Bola10', 'Bola11', 'Bola12', 
-                               'Bola13', 'Bola14', 'Bola15'])
-
-        print("Carregando dados existentes...")
-        df = pd.read_csv(os.path.join(DADOS_DIR, 'resultados.csv'))
-        
-        # Obtém o último concurso
-        ultimo_concurso = df['Concurso'].max() if not df.empty else 0
-        print(f"Último concurso encontrado: {ultimo_concurso}")
-
-        # URL da API da Caixa
-        url = f'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/'
-        print(f"Fazendo requisição para: {url}")
-        
+        url = 'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil'
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Origin': 'https://loterias.caixa.gov.br',
-            'Referer': 'https://loterias.caixa.gov.br/',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
+            'Accept': '*/*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
-            print(f"Erro na requisição: Status {response.status_code}")
-            return jsonify({'success': False, 'error': f'Erro ao obter dados da API: {response.status_code}'}), 500
-        
+            return jsonify({
+                'success': False,
+                'error': f'Erro ao acessar API da Caixa: {response.status_code}'
+            }), 500
+
         data = response.json()
-        print(f"Dados recebidos da API: {data}")
+        resultados = []
         
-        novo_concurso = int(data['numero'])
-        print(f"Novo concurso: {novo_concurso}")
+        # Criar diretório se não existir
+        if not os.path.exists(DADOS_DIR):
+            os.makedirs(DADOS_DIR)
+            
+        arquivo_csv = os.path.join(DADOS_DIR, 'resultados.csv')
         
-        if novo_concurso > ultimo_concurso:
-            print("Atualizando resultados...")
-            numeros = [int(n) for n in data['dezenasSorteadasOrdemSorteio']]
-            data_sorteio = data['dataApuracao']
-            
-            nova_linha = [novo_concurso, data_sorteio] + numeros
-            df_nova = pd.DataFrame([nova_linha], columns=df.columns)
-            df = pd.concat([df, df_nova], ignore_index=True)
-            
-            print("Salvando arquivo atualizado...")
-            df.to_csv(os.path.join(DADOS_DIR, 'resultados.csv'), index=False)
-            treinar_modelo(df)
-            return jsonify({'success': True, 'message': 'Resultados atualizados com sucesso!'})
-        else:
-            print("Nenhuma atualização necessária")
-            return jsonify({'success': True, 'message': 'Resultados já estão atualizados!'})
-            
+        # Se arquivo não existe, criar com cabeçalho
+        if not os.path.exists(arquivo_csv):
+            with open(arquivo_csv, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Concurso', 'Data'] + [f'Bola{i}' for i in range(1, 16)])
+
+        # Carregar resultados existentes
+        existentes = set()
+        if os.path.exists(arquivo_csv):
+            with open(arquivo_csv, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    existentes.add(int(row['Concurso']))
+
+        # Adicionar apenas resultados novos
+        novos_resultados = []
+        for resultado in data['resultados']:
+            concurso = int(resultado['concurso'])
+            if concurso not in existentes:
+                data_sorteio = resultado['dataSorteio']
+                dezenas = sorted([int(d) for d in resultado['dezenas']])
+                novos_resultados.append([concurso, data_sorteio] + dezenas)
+
+        # Adicionar novos resultados ao arquivo
+        if novos_resultados:
+            with open(arquivo_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerows(novos_resultados)
+
+        return jsonify({
+            'success': True,
+            'message': f'Adicionados {len(novos_resultados)} novos resultados'
+        })
+
     except Exception as e:
         print(f"Erro durante atualização: {str(e)}")
         return jsonify({'success': False, 'error': f'Erro ao atualizar resultados: {str(e)}'}), 500
@@ -172,6 +169,35 @@ def gerar_numeros(metodo='aleatorio', quantidade=15):
     except Exception as e:
         print(f"Erro ao gerar números: {str(e)}")
         return sorted(np.random.choice(range(1, 26), size=quantidade, replace=False))
+
+def gerar():
+    """Endpoint para gerar números"""
+    try:
+        data = request.get_json()
+        metodo = data.get('metodo', 'aleatorio')
+        quantidade = int(data.get('quantidade', 15))
+        
+        numeros = gerar_numeros(metodo, quantidade)
+        if not numeros:
+            return jsonify({
+                'success': False,
+                'error': 'Erro ao gerar números'
+            }), 500
+            
+        # Analisar os números gerados
+        analise = analisar_jogo(numeros)
+        
+        return jsonify({
+            'success': True,
+            'numeros': numeros,
+            'analise': analise
+        })
+    except Exception as e:
+        print(f"Erro ao gerar números: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 def analisar_jogo(numeros):
     """Analisa um jogo específico com base nos dados históricos"""
@@ -304,22 +330,9 @@ def atualizar():
     return atualizar_resultados()
 
 @app.route('/api/gerar', methods=['POST'])
-def gerar():
+def gerar_numeros():
     """Endpoint para gerar números"""
-    try:
-        data = request.get_json()
-        metodo = data.get('metodo', 'aleatorio')
-        quantidade = int(data.get('quantidade', 15))
-        numeros = gerar_numeros(metodo, quantidade)
-        return jsonify({
-            'success': True,
-            'numeros': numeros
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+    return gerar()
 
 @app.route('/api/analisar', methods=['POST'])
 def analisar():
