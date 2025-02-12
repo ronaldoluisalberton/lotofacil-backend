@@ -479,6 +479,14 @@ def ultimo_concurso():
             'error': str(e)
         }), 500
 
+@app.route('/api/status')
+def status():
+    """Endpoint para verificar se a API está online"""
+    return jsonify({
+        'status': 'online',
+        'timestamp': datetime.now().isoformat()
+    })
+
 if __name__ == '__main__':
     # Configuração para o Glitch
     port = int(os.environ.get('PORT', 3000))
